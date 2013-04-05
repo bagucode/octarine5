@@ -175,37 +175,8 @@ namespace octarine {
 	namespace t {
 
 		template <typename T>
-		struct destroy {
-			// static void call(T* self); // Must not throw exceptions
-		};
-
-		template <typename T>
-		struct gc_mark {
-			// static void set(Context* ctx, T* self); // Must not throw exceptions
-			// static bool get(Context* ctx, T* self); // Must not throw exceptions
-		};
-
-		template <typename T>
-		struct borrow_count {
-			//static void inc(T*);
-			//static void dec(T*);
-		};
-
-		// An owner type of Nothing indicates that the value pointed to
-		// is a constant and thus, inc and dec are noops.
-		template <>
-		struct borrow_count<Nothing> {
-			static void inc(Nothing*) { }
-			static void dec(Nothing*) { }
-		};
-
-		template <typename T>
 		struct is_protocol {
 			static const bool value = false;
-		};
-
-		template <typename T>
-		struct as_hashtableKey {
 		};
 
 	} // namespace t
@@ -235,6 +206,7 @@ namespace octarine {
 		static const OwnageType ownage = OT;
 		static const Bool pobject = False;
 		T* operator->() { return obj; }
+		void dtor(Context* ctx);
 	};
 
 	template <OwnageType OT, typename T>
@@ -244,6 +216,7 @@ namespace octarine {
 		static const OwnageType ownage = OT;
 		static const Bool pobject = True;
 		T* operator->() { return obj; }
+		void dtor(Context* ctx);
 	};
 
 	template <OwnageType OT, typename T>
@@ -261,50 +234,6 @@ namespace octarine {
 	template <typename T>
 	struct Constant : Pointer<CONSTANT, T> { };
 	
-	//// DEC Borrowed
-	//template <typename T>
-	//struct Borrowed {
-	//	T* obj;
-
-	//	static const OwnageType ownage = BORROWED;
-	//	T* operator->() { return obj; }
-	//};
-
-	//// DEC Owned
-	//template <typename T>
-	//struct Owned {
-	//	T* obj;
-
-	//	static const OwnageType ownage = OWNED;
-	//	T* operator->() { return obj; }
-	//};
-
-	//template <typename T>
-	//struct Owned< PObject<T> > {
-	//	PObject<T> obj;
-
-	//	static const OwnageType ownage = OWNED_POBJECT;
-	//	T* operator->() { return obj; }
-	//};
-
-	//// DEC Managed
-	//template <typename T>
-	//struct Managed {
-	//	T* obj;
-
-	//	static const OwnageType ownage = MANAGED;
-	//	T* operator->() { return obj; }
-	//};
-
-	//// DEC Constant
-	//template <typename T>
-	//struct Constant {
-	//	T* obj;
-
-	//	static const OwnageType ownage = CONSTANT;
-	//	T* operator->() { return obj; }
-	//};
-
 	// DEC Array
 	template <typename T>
 	struct Array {
@@ -361,6 +290,7 @@ namespace octarine {
 		Owned< Array< HashtableEntry<HashtableKey<TKey>, TVal> > > entries;
 		void put(TKey key, TVal val);
 		Option<TVal> get(TKey key); // TODO: borrow a value instead of removing it
+		void dtor(Context* ctx);
 	};
 
 	// DEC String. UTF-8 encoded character sequence.
@@ -491,9 +421,7 @@ namespace octarine {
 
 	// DEC ManagedBox
 	struct ManagedBoxHeader {
-		bool gc_marked;
-		Uword borrowCount;
-		Type* type;
+		Uword gcMarked; // This is a Uword to make the header pointer aligned, do not switch to bool
 	};
 
 	template <typename T>
@@ -505,7 +433,7 @@ namespace octarine {
 
 	// DEC OwnedBox
 	struct OwnedBoxHeader {
-		Context* ctx;
+		Uword dummy; // TODO: remove this header?
 	};
 
 	template <typename T>
@@ -522,7 +450,8 @@ namespace octarine {
 			OWNED_OBJECT,
 			CONSTANT_OBJECT
 		};
-		union Value {
+		Variant variant;
+		union {
 			Nothing nothing;
 			Owned< Object<Unknown> > owned;
 			Constant< Object<Unknown> > constant;
@@ -533,12 +462,14 @@ namespace octarine {
 		Variant getVariant();
 		Owned< Object<Unknown> > getOwnedObject();
 		Constant< Object<Unknown> > getConstantObject();
+		void dtor(Context* ctx);
 	};
 
 	// DEC Namespace
 	struct Namespace {
 		String name;
 		Hashtable< String, Object<Unknown> > bindings;
+		void dtor(Context* ctx);
 	};
 
 	// DEC End
@@ -601,7 +532,6 @@ namespace octarine {
 		if(!box) {
 			throw Exception(); // TODO: message
 		}
-		box->header.ctx = ctx;
 		Owned<T> ret;
 		ret.obj = &box->object;
 		return ret;
@@ -675,10 +605,7 @@ namespace octarine {
 			delete (*ci);
 		}
 		// delete all namespaces
-		Uword i;
-		for(i = _namespace; ni != _namespaces.end(); ++ni) {
-			delete ni->second;
-		}
+		_namespaces.dtor(nullptr);
 		// delete LLVM execution engine; this also deletes the JIT module
 		delete _ee;
 	}
@@ -692,52 +619,34 @@ namespace octarine {
 	}
 
 	// DEF NamespaceEntry
-	NamespaceEntry::NamespaceEntry(Runtime* rt, Variant variant, Value value):
-		_rt(rt), _variant(variant), _value(value) {
-	}
-
-	NamespaceEntry::NamespaceEntry(NamespaceEntry&& other):
-		_rt(other._rt), _variant(other._variant), _value(other._value) {
-		other._variant = NOTHING;
-	}
-
-	NamespaceEntry::~NamespaceEntry() {
-		if(_variant == OWNED_OBJECT) {
-			_value.owned.dtor(_rt->getCurrentContext());
-			_rt->getExchangeHeap().free(_value.owned.self.obj);
-		}
-	}
-
-	NamespaceEntry& NamespaceEntry::operator=(NamespaceEntry&& other) {
-		_rt = std::move(other._rt);
-		_variant = std::move(other._variant);
-		_value = std::move(other._value);
-		other._variant = NOTHING;
-		return *this;
-	}
-
 	bool NamespaceEntry::isNothing() {
-		return _variant == NOTHING;
+		return variant == NOTHING;
 	}
 
 	bool NamespaceEntry::isOwned() {
-		return _variant == OWNED_OBJECT;
+		return variant == OWNED_OBJECT;
 	}
 
 	bool NamespaceEntry::isConstant() {
-		return _variant == CONSTANT_OBJECT;
+		return variant == CONSTANT_OBJECT;
 	}
 
 	NamespaceEntry::Variant NamespaceEntry::getVariant() {
-		return _variant;
+		return variant;
 	}
 
-	Object<Owned> NamespaceEntry::getOwnedObject() {
-		return _value.owned;
+	Owned< Object<Unknown> > NamespaceEntry::getOwnedObject() {
+		return owned;
 	}
 
-	Object<Constant> NamespaceEntry::getConstantObject() {
-		return _value.constant;
+	Constant< Object<Unknown> > NamespaceEntry::getConstantObject() {
+		return constant;
+	}
+
+	void NamespaceEntry::dtor(Context* ctx) {
+		if(isOwned()) {
+			owned.dtor(ctx);
+		}
 	}
 
 	// DEF Context
@@ -755,17 +664,6 @@ namespace octarine {
 		_ns = ns;
 	}
 
-	// DEF Namespace
-	Namespace::Namespace(const std::string& name): _name(name) {
-	}
-
-	Namespace::~Namespace() {
-	}
-
-	std::string Namespace::getName() {
-		return _name;
-	}
-
 	// DEF Hashable
 	template <typename T>
 	Uword Hashable<T>::hash(Context* ctx) {
@@ -779,7 +677,7 @@ namespace octarine {
 	}
 
 	template <typename T>
-	Bool HashtableKey<T>::equals(Context* ctx, Object<Borrowed> other) {
+	Bool HashtableKey<T>::equals(Context* ctx, Borrowed< Object<T> > other) {
 		return vtable->fns.a.equals(ctx, self, other);
 	}
 
