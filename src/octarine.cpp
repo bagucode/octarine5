@@ -17,6 +17,12 @@
 // ## 03 ## Platform includes
 #ifdef _WIN32
 #include <Windows.h>
+#elif defined (__APPLE__)
+#include <pthread.h>
+#include <libkern/OSAtomic.h>
+#include <mach/mach_time.h>
+#include <time.h>
+#include <unistd.h>
 #endif
 
 namespace octarine {
@@ -139,20 +145,99 @@ namespace octarine {
 		bool atomicCompareExchangeUword(volatile Uword* place, Uword expected, Uword newValue) {
 			return InterlockedCompareExchange(place, newValue, expected) == expected;
 		}
-		Uword nanoTimestamp() {
+		U64 nanoTimestamp() {
 			LARGE_INTEGER now;
 			QueryPerformanceCounter(&now);
-			return Uword(double(now.QuadPart)/timerFreq);
+			return U64(double(now.QuadPart)/timerFreq);
 		}
 		void sleep(Uword millis) {
 			Sleep((DWORD)millis);
 		}
 		void sleepNanos(Uword nanos) {
 			// No such function on windows so we cobble something together using Sleep(0) and high resolution timers
-			Uword start = nanoTimestamp();
+			U64 start = nanoTimestamp();
 			while(nanoTimestamp() - start < nanos) {
 				Sleep(0);
 			}
+		}
+	};
+    #elif defined (__APPLE__)
+	class System {
+	private:
+        mach_timebase_info_data_t _timebaseInfo;
+	public:
+		template <typename T>
+		class ThreadLocal {
+		private:
+			pthread_key_t _key;
+		public:
+			ThreadLocal(T* val = nullptr) {
+                pthread_key_create(&_key, nullptr);
+                pthread_setspecific(_key, val);
+			}
+			~ThreadLocal() {
+				pthread_key_delete(_key);
+			}
+			T* get() const {
+                return (T*)pthread_getspecific(_key);
+			}
+			void set(T* val) {
+                pthread_setspecific(_key, val);
+			}
+		};
+		System() {
+            mach_timebase_info(&_timebaseInfo);
+		}
+		~System() { }
+		void* alloc(Uword size) {
+			void* place = ::malloc(size);
+			if(!place) {
+				throw std::bad_alloc();
+			}
+			return place;
+		}
+		void free(void* place) {
+			::free(place);
+		}
+		void atomicSetUword(volatile Uword* place, Uword value) {
+            #ifdef OCT_64
+                while(true) {
+                    Uword old = *place;
+                    if(OSAtomicCompareAndSwap64Barrier((int64_t)old, (int64_t)value, (volatile int64_t*)place)) {
+                        break;
+                    }
+                }
+            #endif
+		}
+		Uword atomicGetUword(volatile Uword* place) {
+            #ifdef OCT_64
+                while(true) {
+                    Uword val = *place;
+                    if(OSAtomicCompareAndSwap64Barrier((int64_t)val, (int64_t)val, (volatile int64_t*)place)) {
+                        return val;
+                    }
+                }
+            #endif
+		}
+		bool atomicCompareExchangeUword(volatile Uword* place, Uword expected, Uword newValue) {
+            #ifdef OCT_64
+                return OSAtomicCompareAndSwap64Barrier((int64_t)expected, (int64_t)newValue, (volatile int64_t*)place);
+            #endif
+		}
+		U64 nanoTimestamp() {
+			U64 ts = mach_absolute_time();
+            ts *= _timebaseInfo.numer;
+            ts /= _timebaseInfo.denom;
+			return ts;
+		}
+		void sleep(Uword millis) {
+            usleep(millis * 1000);
+		}
+		void sleepNanos(U64 nanos) {
+            timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = nanos;
+            nanosleep(&ts, nullptr);
 		}
 	};
 	#endif
@@ -162,7 +247,7 @@ namespace octarine {
 	// ## 05.01 ## Forward declarations
 	class Context;
 	struct Type;
-	class Namespace;
+	struct Namespace;
 	template <typename TSelf>
 	struct HashtableKey;
 	struct Nothing;
@@ -187,7 +272,7 @@ namespace octarine {
 	struct Unknown { };
 
 	// DEC Nothing. A type that, with variadic types, replaces the use of null pointers.
-	struct Nothing { };
+	struct Nothing { Nothing() {} };
 	static const Nothing nil;
 
 	// DEC OwnageType for pointers
@@ -199,7 +284,7 @@ namespace octarine {
 	};
 
 	// DEC Pointer
-	template <OwnageType OT, typename T, bool pobject>
+	template <OwnageType OT, typename T, bool is_pobject>
 	struct PointerBase {
 		T* obj;
 
@@ -339,12 +424,12 @@ namespace octarine {
 	};
 
 	// DEC ProtocolObject
-	template <typename TSelf, typename TVTable>
+	template <typename TS, typename TVT>
 	struct ProtocolObject {
-		typedef TSelf TSelf;
-		typedef TVTable TVTable;
-		TSelf* self;
-		TVTable* vtable;
+		typedef TS TSelf;
+		typedef TVT TVTable;
+		TS* self;
+		TVT* vtable;
 	};
 	
 	// DEC Object protocol
@@ -483,7 +568,7 @@ namespace octarine {
 	}
 	
 	template <typename T>
-	void Object<T>::gc_mark(Context* ctx) {
+	void Object<T>::gc_mark(Context *ctx) {
 		vtable->fns.gc_mark(ctx, self);
 	}
 
