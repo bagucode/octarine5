@@ -557,19 +557,24 @@ namespace octarine {
 		void dtor(Context* ctx);
 	};
 
+    // DEC Exception
+    class Exception {
+		// TODO: everything :)
+	};
+    
 	// DEC End
 
 	// ## 09 ## Definitions
 
 	// DEF Object protocol. Must be satisfied by all octarine types.
-	template <typename T>
+    template <typename T>
 	void Object<T>::dtor(Context* ctx) {
-		vtable->fns.dtor(ctx, self);
+		this->vtable->fns.dtor(ctx, this->self);
 	}
 	
 	template <typename T>
 	void Object<T>::gc_mark(Context *ctx) {
-		vtable->fns.gc_mark(ctx, self);
+		this->vtable->fns.gc_mark(ctx, this->self);
 	}
 
 	namespace t {
@@ -582,7 +587,7 @@ namespace octarine {
 	// DEF EqComparable protocol.
 	template <typename T>
 	Bool EqComparable<T>::equals(Context* ctx, Borrowed<Object<T> > other) {
-		return vtable->fns.equals(ctx, self, other);
+		return this->vtable->fns.equals(ctx, this->self, other);
 	};
 
 	namespace t {
@@ -640,10 +645,6 @@ namespace octarine {
 	}
 
 	// TODO: Managed Heap
-
-	class Exception {
-		// TODO: everything :)
-	};
 
 	// DEF Runtime
 	static volatile Uword didLLVMInit = False;
@@ -752,18 +753,18 @@ namespace octarine {
 	// DEF Hashable
 	template <typename T>
 	Uword Hashable<T>::hash(Context* ctx) {
-		return vtable->fns.hash(ctx, self);
+		return this->vtable->fns.hash(ctx, this->self);
 	}
 
 	// DEF HashtableKey
 	template <typename T>
 	Uword HashtableKey<T>::hash(Context* ctx) {
-		return vtable->fns.b.hash(ctx, self);
+		return this->vtable->fns.b.hash(ctx, this->self);
 	}
 
 	template <typename T>
 	Bool HashtableKey<T>::equals(Context* ctx, Borrowed< Object<T> > other) {
-		return vtable->fns.a.equals(ctx, self, other);
+		return this->vtable->fns.a.equals(ctx, this->self, other);
 	}
 
 	// DEF Option
