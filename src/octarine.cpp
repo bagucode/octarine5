@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cstdlib>
 #include <exception>
+#include <cstring>
+#include <memory>
 
 // ## 02 ## LLVM includes
 #include <llvm/ExecutionEngine/JIT.h>
@@ -382,7 +384,7 @@ namespace octarine {
 	struct String {
 		Uword numCodepoints;
 		Owned< Array<U8> > data;
-		static String createFromCString(const char* str);
+		static String createFromCString(Context* ctx, const char* str);
 	};
 
 	// DEC Runtime
@@ -415,8 +417,9 @@ namespace octarine {
 	public:
 		Context(Runtime* rt, Namespace* ns);
 		~Context();
-		Namespace* getNamespace();
+		Namespace* getNamespace() const;
 		void setNamespace(Namespace* ns);
+        Runtime* getRuntime() const;
 	};
 
 	// DEC Type
@@ -633,7 +636,6 @@ namespace octarine {
 		if(!box) {
 			throw Exception(); // TODO: message
 		}
-		box->header.ctx = ctx;
 		Owned< Array<T> > ret;
 		ret.obj = &box->object;
 		return ret;
@@ -673,13 +675,12 @@ namespace octarine {
 		_jitModule = new llvm::Module("JITModule", _llvmContext);
 		_ee = llvm::ExecutionEngine::createJIT(_jitModule);
 		assert(_ee && "Could not create JIT compiler. Unsupported platform?");
-		// Create octarine Namespace
 
+		// Create octarine namespace and the main thread context
 		Owned<Namespace> octNs = _exchangeHeap.alloc<Namespace>(nullptr);
-		octNs->name = String::createFromCString("octarine");
-		_namespaces.put(octNs->name, octNs);
-		// Create main Context
 		Context* mainCtx = new Context(this, octNs.obj);
+		octNs->name = String::createFromCString(mainCtx, "octarine");
+		_namespaces.put(octNs->name, octNs);
 		_contexts.push_back(mainCtx);
 		_currentContext.set(mainCtx);
 	}
@@ -742,13 +743,17 @@ namespace octarine {
 	Context::~Context() {
 	}
 	
-	Namespace* Context::getNamespace() {
+	Namespace* Context::getNamespace() const {
 		return _ns;
 	}
 
 	void Context::setNamespace(Namespace* ns) {
 		_ns = ns;
 	}
+    
+    Runtime* Context::getRuntime() const {
+        return _rt;
+    }
 
 	// DEF Hashable
 	template <typename T>
@@ -781,6 +786,18 @@ namespace octarine {
 		return value;
 	}
 
+    // DEF String
+    String String::createFromCString(Context* ctx, const char* str) {
+        Uword len = strlen(str);
+        String s;
+        s.data = ctx->getRuntime()->getExchangeHeap().allocArray<U8>(ctx, len + 1);
+        memcpy(&s.data->data[0], str, len);
+        s.data->data[len] = '\0';
+        s.data->size = len + 1;
+        s.numCodepoints = len; // This is not correct. Need to account for multibyte chars.
+        return s;
+    }
+    
 	// DEF End
 
 } // namespace octarine
