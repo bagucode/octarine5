@@ -274,7 +274,11 @@ namespace octarine {
 	struct Unknown { };
 
 	// DEC Nothing. A type that, with variadic types, replaces the use of null pointers.
+#ifdef __APPLE__
 	struct Nothing { Nothing() {} };
+#elif defined _WIN32
+	struct Nothing { };
+#endif
 	static const Nothing nil;
 
 	// DEC OwnageType for pointers
