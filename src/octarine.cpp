@@ -379,9 +379,10 @@ namespace octarine {
 	template <typename TKey, typename TVal>
 	struct Hashtable {
 		Owned< Array< HashtableEntry<HashtableKey<TKey>, TVal> > > entries;
+        void ctor(Context* ctx);
+		void dtor(Context* ctx);
 		void put(TKey key, TVal val);
 		Option<TVal> get(TKey key); // TODO: borrow a value instead of removing it
-		void dtor(Context* ctx);
 	};
 
 	// DEC String. UTF-8 encoded character sequence.
@@ -775,6 +776,30 @@ namespace octarine {
 	Bool HashtableKey<T>::equals(Context* ctx, Borrowed< Object<T> > other) {
 		return this->vtable->fns.a.equals(ctx, this->self, other);
 	}
+    
+    // DEF Hashtable
+    template <typename TKey, typename TVal>
+    void Hashtable<TKey, TVal>::put(TKey key, TVal val) {
+#error implement!
+        
+    }
+    
+    template <typename TKey, typename TVal>
+    Option<TVal> Hashtable<TKey, TVal>::get(TKey key) {
+#error implement!
+        
+    }
+    
+    template <typename TKey, typename TVal>
+    void Hashtable<TKey, TVal>::ctor(Context* ctx) {
+        entries = ctx->getRuntime()->getExchangeHeap().allocArray<HashtableEntry< HashtableKey<TKey>, TVal> >(ctx, 100);
+    }
+
+    template <typename TKey, typename TVal>
+    void Hashtable<TKey, TVal>::dtor(Context* ctx) {
+        entries.dtor(ctx);
+    }
+
 
 	// DEF Option
 	template <typename T>
